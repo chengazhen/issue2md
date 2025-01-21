@@ -3,6 +3,7 @@ package github
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -108,4 +109,52 @@ func FetchComments(owner, repo string, issueNumber int, token string) ([]Comment
 	}
 
 	return comments, nil
+}
+
+func FetchAllIssues(owner, repo string, token string) ([]Issue, error) {
+	var allIssues []Issue
+	page := 1
+	perPage := 100
+
+	for {
+		url := fmt.Sprintf("https://api.github.com/repos/%s/%s/issues?state=all&per_page=%d&page=%d",
+			owner, repo, perPage, page)
+
+		req, err := http.NewRequest("GET", url, nil)
+		if err != nil {
+			return nil, err
+		}
+
+		if token != "" {
+			req.Header.Set("Authorization", "token "+token)
+		}
+		req.Header.Set("Accept", "application/vnd.github.v3+json")
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return nil, err
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			return nil, fmt.Errorf("GitHub API returned status %d: %s", resp.StatusCode, string(body))
+		}
+
+		var issues []Issue
+		if err := json.NewDecoder(resp.Body).Decode(&issues); err != nil {
+			resp.Body.Close()
+			return nil, err
+		}
+		resp.Body.Close()
+
+		if len(issues) == 0 {
+			break
+		}
+
+		allIssues = append(allIssues, issues...)
+		page++
+	}
+
+	return allIssues, nil
 }
