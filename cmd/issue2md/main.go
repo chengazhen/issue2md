@@ -55,8 +55,8 @@ func init() {
 }
 
 func randomDelay() {
-	// 生成 1-5 秒的随机延迟
-	delay := 1 + rand.Float64()*4
+	// 生成 0-3 秒的随机延迟
+	delay := rand.Float64() * 2
 	time.Sleep(time.Duration(delay * float64(time.Second)))
 }
 
@@ -74,8 +74,7 @@ func convertIssue(issueURL, outputDir string) error {
 		markdownFile = filepath.Join(outputDir, markdownFile)
 	}
 	if _, err := os.Stat(markdownFile); err == nil {
-		fmt.Printf("Skipping existing file: %s\n", markdownFile)
-		return nil
+		return nil // 直接返回，不打印消息（因为已经在上层打印了）
 	}
 
 	issue, err := github.FetchIssue(owner, repo, issueNumber, token)
@@ -121,6 +120,14 @@ func convertAllIssues(repoURL, outputDir string) error {
 	}
 
 	token := os.Getenv("GITHUB_TOKEN")
+	if token == "" {
+		fmt.Println("Warning: GITHUB_TOKEN not set. API rate limits will be restricted.")
+		fmt.Println("To set the token, use: set GITHUB_TOKEN=your_token")
+		fmt.Println("You can create a token at: https://github.com/settings/tokens")
+		fmt.Println("Press Enter to continue or Ctrl+C to exit...")
+		fmt.Scanln() // 等待用户确认
+	}
+
 	issues, err := github.FetchAllIssues(owner, repo, token)
 	if err != nil {
 		return fmt.Errorf("error fetching issues: %v", err)
@@ -133,24 +140,99 @@ func convertAllIssues(repoURL, outputDir string) error {
 		}
 	}
 
-	fmt.Printf("Found %d issues in repository %s/%s\n", len(issues), owner, repo)
+	totalIssues := len(issues)
+	fmt.Printf("Found %d issues in repository %s/%s\n", totalIssues, owner, repo)
+
+	// 预先检查需要下载的文件数量
+	needDownload := 0
+	for _, issue := range issues {
+		markdownFile := fmt.Sprintf("%s_%s_issue_%d.md", owner, repo, issue.Number)
+		if outputDir != "" {
+			markdownFile = filepath.Join(outputDir, markdownFile)
+		}
+		if _, err := os.Stat(markdownFile); err != nil {
+			needDownload++
+		}
+	}
+
+	// 计算预估的 API 请求数
+	estimatedRequests := needDownload*2 + 1 // 每个需要下载的 issue 2个请求，加上获取列表的1个请求
+	if token == "" && estimatedRequests > 60 {
+		fmt.Printf("Warning: This operation will require approximately %d API requests.\n", estimatedRequests)
+		fmt.Println("Without a token, you are limited to 60 requests per hour.")
+		fmt.Println("Please set GITHUB_TOKEN to avoid rate limiting.")
+		fmt.Printf("Found %d issues that need to be downloaded.\n", needDownload)
+		fmt.Println("Press Enter to continue with the first 30 new issues, or Ctrl+C to exit...")
+		fmt.Scanln() // 等待用户确认
+
+		// 限制处理的 issue 数量到前 30 个需要下载的
+		if needDownload > 30 {
+			fmt.Println("Limiting to first 30 new issues due to API rate limits.")
+			downloadCount := 0
+			filteredIssues := make([]github.Issue, 0)
+			for _, issue := range issues {
+				markdownFile := fmt.Sprintf("%s_%s_issue_%d.md", owner, repo, issue.Number)
+				if outputDir != "" {
+					markdownFile = filepath.Join(outputDir, markdownFile)
+				}
+				if _, err := os.Stat(markdownFile); err != nil {
+					filteredIssues = append(filteredIssues, issue)
+					downloadCount++
+					if downloadCount >= 30 {
+						break
+					}
+				}
+			}
+			issues = filteredIssues
+		}
+	}
+
+	successCount := 0
+	skipCount := 0
+	errorCount := 0
 
 	for i, issue := range issues {
 		issueURL := fmt.Sprintf("https://github.com/%s/%s/issues/%d", owner, repo, issue.Number)
+
+		// 预先检查文件是否存在
+		markdownFile := fmt.Sprintf("%s_%s_issue_%d.md", owner, repo, issue.Number)
+		if outputDir != "" {
+			markdownFile = filepath.Join(outputDir, markdownFile)
+		}
+		if _, err := os.Stat(markdownFile); err == nil {
+			fmt.Printf("[%d/%d] Skipping existing file: %s\n", i+1, len(issues), markdownFile)
+			skipCount++
+			continue
+		}
+
 		fmt.Printf("[%d/%d] Converting issue #%d: %s\n", i+1, len(issues), issue.Number, issue.Title)
 
 		if err := convertIssue(issueURL, outputDir); err != nil {
 			fmt.Printf("Error converting issue %s: %v\n", issueURL, err)
+			if strings.Contains(err.Error(), "403") {
+				fmt.Println("Rate limit exceeded. Please wait an hour or set GITHUB_TOKEN.")
+				return fmt.Errorf("rate limit exceeded")
+			}
 			// Wait a bit longer if we encounter an error (might be rate limiting)
 			time.Sleep(10 * time.Second)
+			errorCount++
 			continue
 		}
+
+		successCount++
 
 		// Add random delay between issues
 		if i < len(issues)-1 { // 不在最后一个 issue 后添加延迟
 			randomDelay()
 		}
 	}
+
+	// 打印统计信息
+	fmt.Printf("\nDownload Summary:\n")
+	fmt.Printf("Total issues found: %d\n", totalIssues)
+	fmt.Printf("Successfully downloaded: %d\n", successCount)
+	fmt.Printf("Skipped (already exist): %d\n", skipCount)
+	fmt.Printf("Failed: %d\n", errorCount)
 
 	return nil
 }
