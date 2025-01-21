@@ -4,9 +4,11 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/bigwhite/issue2md/internal/converter"
 	"github.com/bigwhite/issue2md/internal/github"
@@ -47,6 +49,17 @@ func parseRepoURL(repoURL string) (owner string, repo string, err error) {
 	return owner, repo, nil
 }
 
+func init() {
+	// 初始化随机数种子
+	rand.Seed(time.Now().UnixNano())
+}
+
+func randomDelay() {
+	// 生成 3-5 秒的随机延迟
+	delay := 3 + rand.Float64()*2
+	time.Sleep(time.Duration(delay * float64(time.Second)))
+}
+
 func convertIssue(issueURL, outputDir string) error {
 	owner, repo, issueNumber, err := github.ParseIssueURL(issueURL)
 	if err != nil {
@@ -55,10 +68,23 @@ func convertIssue(issueURL, outputDir string) error {
 
 	token := os.Getenv("GITHUB_TOKEN")
 
+	// Check if file already exists
+	markdownFile := fmt.Sprintf("%s_%s_issue_%d.md", owner, repo, issueNumber)
+	if outputDir != "" {
+		markdownFile = filepath.Join(outputDir, markdownFile)
+	}
+	if _, err := os.Stat(markdownFile); err == nil {
+		fmt.Printf("Skipping existing file: %s\n", markdownFile)
+		return nil
+	}
+
 	issue, err := github.FetchIssue(owner, repo, issueNumber, token)
 	if err != nil {
 		return fmt.Errorf("error fetching issue: %v", err)
 	}
+
+	// Add a random delay between API calls
+	randomDelay()
 
 	comments, err := github.FetchComments(owner, repo, issueNumber, token)
 	if err != nil {
@@ -66,13 +92,11 @@ func convertIssue(issueURL, outputDir string) error {
 	}
 
 	markdown := converter.IssueToMarkdown(issue, comments)
-	markdownFile := fmt.Sprintf("%s_%s_issue_%d.md", owner, repo, issue.Number)
 	if outputDir != "" {
 		// Create output directory if it doesn't exist
 		if err := os.MkdirAll(outputDir, 0755); err != nil {
 			return fmt.Errorf("error creating output directory: %v", err)
 		}
-		markdownFile = filepath.Join(outputDir, markdownFile)
 	}
 
 	file, err := os.Create(markdownFile)
@@ -110,11 +134,21 @@ func convertAllIssues(repoURL, outputDir string) error {
 	}
 
 	fmt.Printf("Found %d issues in repository %s/%s\n", len(issues), owner, repo)
-	for _, issue := range issues {
+
+	for i, issue := range issues {
 		issueURL := fmt.Sprintf("https://github.com/%s/%s/issues/%d", owner, repo, issue.Number)
-		fmt.Printf("Converting issue #%d: %s\n", issue.Number, issue.Title)
+		fmt.Printf("[%d/%d] Converting issue #%d: %s\n", i+1, len(issues), issue.Number, issue.Title)
+
 		if err := convertIssue(issueURL, outputDir); err != nil {
 			fmt.Printf("Error converting issue %s: %v\n", issueURL, err)
+			// Wait a bit longer if we encounter an error (might be rate limiting)
+			time.Sleep(10 * time.Second)
+			continue
+		}
+
+		// Add random delay between issues
+		if i < len(issues)-1 { // 不在最后一个 issue 后添加延迟
+			randomDelay()
 		}
 	}
 
