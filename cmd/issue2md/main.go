@@ -55,8 +55,8 @@ func init() {
 }
 
 func randomDelay() {
-	// 生成 3-5 秒的随机延迟
-	delay := 3 + rand.Float64()*2
+	// 生成 1-5 秒的随机延迟
+	delay := 1 + rand.Float64()*4
 	time.Sleep(time.Duration(delay * float64(time.Second)))
 }
 
